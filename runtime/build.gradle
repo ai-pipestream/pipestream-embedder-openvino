@@ -52,7 +52,7 @@ dependencies {
     implementation libs.grpc.protobuf
     implementation libs.protobuf.java
 
-    implementation "ai.pipestream.module:module-embedder-api:${pipestreamBomVersion}"
+    implementation "ai.pipestream.module:module-embedder-api:${findProperty('embedderApiVersion') ?: pipestreamBomVersion}"
 
     annotationProcessor platform(libs.quarkus.bom)
     annotationProcessor 'io.quarkus:quarkus-extension-processor'

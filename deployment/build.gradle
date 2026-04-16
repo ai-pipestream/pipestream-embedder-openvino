@@ -26,7 +26,7 @@ dependencies {
     implementation 'io.quarkus:quarkus-arc-deployment'
     implementation 'io.quarkus:quarkus-core-deployment'
 
-    implementation "ai.pipestream.module:module-embedder-api-deployment:${pipestreamBomVersion}"
+    implementation "ai.pipestream.module:module-embedder-api-deployment:${findProperty('embedderApiVersion') ?: pipestreamBomVersion}"
 
     annotationProcessor platform(libs.quarkus.bom)
     annotationProcessor 'io.quarkus:quarkus-extension-processor'
