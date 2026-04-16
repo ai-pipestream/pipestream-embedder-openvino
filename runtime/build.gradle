@@ -1,0 +1,69 @@
+plugins {
+    alias(libs.plugins.java.library)
+    alias(libs.plugins.quarkus.extension)
+    alias(libs.plugins.proto.toolchain)
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+description = 'Quarkus OpenVINO Embeddings Extension - Runtime'
+
+def pipestreamBomVersion = findProperty('pipestreamBomVersion')
+
+quarkusExtension {
+    deploymentModule = 'deployment'
+}
+
+// Proto configuration - fetch KServe V2 Protocol from KServe repository
+pipestreamProtos {
+    sourceMode = 'git'
+    generateMutiny = true
+
+    modules {
+        register("kserve-v2") {
+            gitRepo = "https://github.com/kserve/kserve.git"
+            gitRef = "master"
+            gitSubdir = "docs/predict-api/v2"
+        }
+    }
+}
+
+dependencies {
+    implementation platform(libs.quarkus.bom)
+
+    implementation 'io.quarkus:quarkus-core'
+    implementation 'io.quarkus:quarkus-arc'
+    implementation 'io.quarkus:quarkus-mutiny'
+    implementation 'io.quarkus:quarkus-grpc'
+    implementation 'io.quarkus:quarkus-rest-client'
+    implementation 'io.quarkus:quarkus-rest-client-jackson'
+
+    implementation libs.grpc.stub
+    implementation libs.grpc.protobuf
+    implementation libs.protobuf.java
+
+    // Embedder SPI — the single EmbeddingBackend interface this
+    // extension implements. Published from the module-embedder repo
+    // as a standalone Quarkus extension (runtime + deployment) so
+    // Quarkus's extension classloader infrastructure ensures all
+    // consumers see the same Class<EmbeddingBackend> object.
+    implementation "ai.pipestream.module:module-embedder-api:${pipestreamBomVersion}"
+
+    annotationProcessor platform(libs.quarkus.bom)
+    annotationProcessor 'io.quarkus:quarkus-extension-processor'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter-api'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+tasks.matching { it.name == 'validateExtension' }.configureEach {
+    enabled = false
+}

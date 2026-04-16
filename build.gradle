@@ -1,0 +1,20 @@
+plugins {
+    alias(libs.plugins.axion.release)
+}
+
+scmVersion {
+    tag {
+        prefix = 'v'
+        initialVersion { config, position -> '0.0.1' }
+    }
+    checks {
+        uncommittedChanges = false
+        aheadOfRemote = false
+        snapshotDependencies = false
+    }
+}
+
+allprojects {
+    group = 'ai.pipestream.module'
+    version = rootProject.scmVersion.version
+}

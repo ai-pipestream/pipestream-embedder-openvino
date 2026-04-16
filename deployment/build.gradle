@@ -1,0 +1,28 @@
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+description = 'Quarkus OpenVINO Embeddings Extension - Deployment'
+
+def pipestreamBomVersion = findProperty('pipestreamBomVersion')
+
+dependencies {
+    implementation platform(libs.quarkus.bom)
+
+    implementation project(':runtime')
+
+    implementation 'io.quarkus:quarkus-arc-deployment'
+    implementation 'io.quarkus:quarkus-core-deployment'
+
+    // module-embedder-api deployment module — required so Quarkus
+    // ARC properly indexes the EmbeddingBackend interface at build time.
+    implementation "ai.pipestream.module:module-embedder-api-deployment:${pipestreamBomVersion}"
+
+    annotationProcessor platform(libs.quarkus.bom)
+    annotationProcessor 'io.quarkus:quarkus-extension-processor'
+}

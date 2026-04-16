@@ -1,0 +1,52 @@
+plugins {
+    alias(libs.plugins.java.library)
+}
+
+description = 'Quarkus OpenVINO Embeddings Extension - Integration Tests'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+dependencies {
+    testImplementation platform(libs.quarkus.bom)
+
+    testImplementation project(':runtime')
+
+    testImplementation 'io.smallrye.reactive:mutiny'
+    testImplementation 'org.slf4j:slf4j-api'
+
+    testImplementation libs.grpc.stub
+    testImplementation libs.grpc.protobuf
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.assertj:assertj-core:3.25.3'
+    testImplementation 'org.testcontainers:testcontainers:2.0.4'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.4'
+
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'failed', 'skipped'
+        showStandardStreams = true
+    }
+    systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
+    ['ovms.host', 'ovms.port', 'ovms.enableBgeM3'].each { key ->
+        def value = System.getProperty(key)
+        if (value != null) {
+            systemProperty key, value
+        }
+    }
+    jvmArgs '-Xmx2g'
+    maxParallelForks = 1
+}
+
+compileJava {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-parameters'
+}
