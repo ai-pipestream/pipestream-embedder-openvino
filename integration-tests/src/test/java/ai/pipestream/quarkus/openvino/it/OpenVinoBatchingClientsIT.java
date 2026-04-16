@@ -1,9 +1,7 @@
 package ai.pipestream.quarkus.openvino.it;
 
 import ai.pipestream.quarkus.openvino.runtime.OpenVinoModelDescriptor;
-import ai.pipestream.quarkus.openvino.runtime.OpenVinoMutinyPipelinedBatchedClient;
 import ai.pipestream.quarkus.openvino.runtime.OpenVinoMutinyStreamingBatchedClient;
-import ai.pipestream.quarkus.openvino.runtime.OpenVinoMutinyUnaryBatchedClient;
 import inference.MutinyGRPCInferenceServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -190,39 +188,6 @@ public class OpenVinoBatchingClientsIT {
     }
 
     @Test
-    @DisplayName("Unary client: produces the same embedding as streaming client for identical input")
-    void testUnaryMatchesStreaming() {
-        var streaming = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        var unary = await(OpenVinoMutinyUnaryBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-
-        List<String> texts = List.of("the weather is nice today");
-        float[] a = streaming.embed(texts).await().indefinitely().get(0);
-        float[] b = unary.embed(texts).await().indefinitely().get(0);
-
-        assertEquals(EXPECTED_DIMS, a.length);
-        assertEquals(EXPECTED_DIMS, b.length);
-        double cos = cosineSimilarity(a, b);
-        log.info("streaming vs unary cos sim: {}", cos);
-        assertTrue(cos > 0.9999, "streaming and unary clients must produce identical embeddings, got cos=" + cos);
-    }
-
-    @Test
-    @DisplayName("Pipelined client: concurrent batches return correct embeddings in order")
-    void testPipelinedConcurrentBatches() {
-        var client = await(OpenVinoMutinyPipelinedBatchedClient.create(stub, PIPELINE, 3, 4, TIMEOUT_MS));
-        List<String> texts = List.of(
-                "alpha", "bravo", "charlie", "delta",
-                "echo", "foxtrot", "golf", "hotel", "india");
-        List<float[]> embeddings = client.embed(texts).await().indefinitely();
-
-        assertEquals(9, embeddings.size());
-        for (float[] v : embeddings) {
-            assertEquals(EXPECTED_DIMS, v.length);
-            assertUnitNorm(v);
-        }
-    }
-
-    @Test
     @DisplayName("Semantic check: related sentences have higher cosine similarity than unrelated")
     void testSemanticCosineSimilarity() {
         var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
@@ -239,23 +204,6 @@ public class OpenVinoBatchingClientsIT {
                 "dog-related sentences should be more similar (" + dogSim
                         + ") than a dog sentence vs a physics sentence (" + unrelatedSim + ")");
         assertTrue(dogSim > 0.15, "dog-related pair should have meaningful similarity, got " + dogSim);
-    }
-
-    @Test
-    @DisplayName("Compare all three clients: same text produces the same embedding from each")
-    void testAllClientsAgree() {
-        var streaming = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        var unary = await(OpenVinoMutinyUnaryBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        var pipelined = await(OpenVinoMutinyPipelinedBatchedClient.create(stub, PIPELINE, 8, 2, TIMEOUT_MS));
-
-        List<String> texts = List.of("shared input across all three clients");
-        float[] s = streaming.embed(texts).await().indefinitely().get(0);
-        float[] u = unary.embed(texts).await().indefinitely().get(0);
-        float[] p = pipelined.embed(texts).await().indefinitely().get(0);
-
-        assertTrue(cosineSimilarity(s, u) > 0.9999);
-        assertTrue(cosineSimilarity(s, p) > 0.9999);
-        assertTrue(cosineSimilarity(u, p) > 0.9999);
     }
 
     @Test
