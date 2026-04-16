@@ -3,7 +3,6 @@ package ai.pipestream.quarkus.openvino.runtime;
 import com.google.protobuf.ByteString;
 import inference.GrpcPredictV2;
 import inference.MutinyGRPCInferenceServiceGrpc;
-import io.grpc.Channel;
 import io.smallrye.mutiny.Uni;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,15 +42,18 @@ public class OpenVinoMutinyPipelinedBatchedClient {
     private final AtomicLong totalLatencyMs = new AtomicLong(0);
     private final AtomicLong totalTextsProcessed = new AtomicLong(0);
 
-    public OpenVinoMutinyPipelinedBatchedClient(Channel channel, String modelName,
-                                                int batchSize, int maxPipeline, int timeoutMs) {
-        this(channel, OpenVinoModelDescriptor.discover(channel, modelName, timeoutMs),
-                batchSize, maxPipeline, timeoutMs);
+    public static Uni<OpenVinoMutinyPipelinedBatchedClient> create(
+            MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+            String modelName, int batchSize, int maxPipeline, int timeoutMs) {
+        return OpenVinoModelDescriptor.discover(stub, modelName, timeoutMs)
+                .map(descriptor -> new OpenVinoMutinyPipelinedBatchedClient(stub, descriptor,
+                        batchSize, maxPipeline, timeoutMs));
     }
 
-    public OpenVinoMutinyPipelinedBatchedClient(Channel channel, OpenVinoModelDescriptor descriptor,
+    public OpenVinoMutinyPipelinedBatchedClient(MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+                                                OpenVinoModelDescriptor descriptor,
                                                 int batchSize, int maxPipeline, int timeoutMs) {
-        this.stub = MutinyGRPCInferenceServiceGrpc.newMutinyStub(channel).withCompression("gzip");
+        this.stub = stub.withCompression("gzip");
         this.descriptor = descriptor;
         this.batchSize = batchSize;
         this.maxPipeline = Math.max(1, maxPipeline);

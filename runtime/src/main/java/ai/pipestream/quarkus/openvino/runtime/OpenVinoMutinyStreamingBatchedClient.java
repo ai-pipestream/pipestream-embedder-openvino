@@ -3,7 +3,6 @@ package ai.pipestream.quarkus.openvino.runtime;
 import com.google.protobuf.ByteString;
 import inference.GrpcPredictV2;
 import inference.MutinyGRPCInferenceServiceGrpc;
-import io.grpc.Channel;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import org.slf4j.Logger;
@@ -30,13 +29,22 @@ public class OpenVinoMutinyStreamingBatchedClient {
     private final AtomicLong totalLatencyMs = new AtomicLong(0);
     private final AtomicLong totalTextsProcessed = new AtomicLong(0);
 
-    public OpenVinoMutinyStreamingBatchedClient(Channel channel, String modelName, int batchSize, int timeoutMs) {
-        this(channel, OpenVinoModelDescriptor.discover(channel, modelName, timeoutMs), batchSize, timeoutMs);
+    /**
+     * Asynchronously build a client — kicks off a {@code ModelMetadata} RPC
+     * to discover tensor names + dims, then constructs the client. Never
+     * blocks the caller.
+     */
+    public static Uni<OpenVinoMutinyStreamingBatchedClient> create(
+            MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+            String modelName, int batchSize, int timeoutMs) {
+        return OpenVinoModelDescriptor.discover(stub, modelName, timeoutMs)
+                .map(descriptor -> new OpenVinoMutinyStreamingBatchedClient(stub, descriptor, batchSize, timeoutMs));
     }
 
-    public OpenVinoMutinyStreamingBatchedClient(Channel channel, OpenVinoModelDescriptor descriptor,
+    public OpenVinoMutinyStreamingBatchedClient(MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+                                                OpenVinoModelDescriptor descriptor,
                                                 int batchSize, int timeoutMs) {
-        this.stub = MutinyGRPCInferenceServiceGrpc.newMutinyStub(channel).withCompression("gzip");
+        this.stub = stub.withCompression("gzip");
         this.descriptor = descriptor;
         this.batchSize = batchSize;
         this.requestTimeout = Duration.ofMillis(timeoutMs);

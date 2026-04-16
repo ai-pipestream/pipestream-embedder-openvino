@@ -1,9 +1,12 @@
 package ai.pipestream.quarkus.openvino.runtime;
 
 import ai.pipestream.module.embedder.spi.EmbeddingBackend;
+import inference.MutinyGRPCInferenceServiceGrpc;
+import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,45 +15,59 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * OpenVINO Model Server backend. Implements the single
- * {@link EmbeddingBackend} SPI over a KServe v2 gRPC transport.
+ * {@link EmbeddingBackend} SPI over a KServe v2 gRPC transport using the
+ * Quarkus {@link GrpcClient} stack — Stork service discovery, TLS,
+ * deadlines, and interceptors are all configurable via
+ * {@code quarkus.grpc.clients.ovms.*} keys, not hand-rolled.
  *
- * <p>Marked {@link Singleton} (not {@code @ApplicationScoped}) because
- * ARC does not generate a client proxy for {@code @Singleton} beans.
- * The proxy-less type is directly assignable to {@link EmbeddingBackend}
- * across classloader boundaries, which is the whole reason the SPI
- * lives in a separate published jar rather than inside module-embedder
- * core.
+ * <pre>
+ * quarkus.grpc.clients.ovms.host=localhost
+ * quarkus.grpc.clients.ovms.port=9001
+ * # TLS:
+ * quarkus.grpc.clients.ovms.tls-configuration-name=ovms-tls
+ * quarkus.tls.ovms-tls.trust-store.p12.path=/etc/certs/ovms-trust.p12
+ * # Stork service discovery:
+ * quarkus.grpc.clients.ovms.name-resolver=stork
+ * quarkus.stork.ovms.service-discovery.type=consul
+ * </pre>
  *
- * <p>Registered at build time via the deployment processor's
- * {@code AdditionalBeanBuildItem} + {@code IndexDependencyBuildItem}
- * pair — the former marks the class unremovable so ARC bean-graph
- * pruning does not delete it, the latter tells ARC to scan the
- * {@code module-embedder-api} jar for the {@link EmbeddingBackend}
- * interface so the bean's implements relationship is visible.
+ * <p><b>Fully reactive.</b> Every gRPC call on the hot path returns a
+ * {@link Uni} — no {@code .await()}, no blocking stubs. Model metadata
+ * discovery ({@code ModelMetadata} RPC) runs asynchronously and its
+ * result is memoised per serving name so subsequent {@code embed()}
+ * calls skip the RPC. {@link #supports(String)} is the one synchronous
+ * method on this interface; it kicks off metadata discovery in the
+ * background and returns optimistically — actual readiness is asserted
+ * at {@code embed()} time, where a failure surfaces as a failed
+ * {@code Uni} that the router can failover on.
  *
- * <p>One {@link OpenVinoMutinyStreamingBatchedClient} is lazily
- * constructed per distinct {@code servingName} and cached for the
- * lifetime of the bean. Client construction fetches model metadata
- * via a blocking gRPC stub, so the first {@link #supports(String)}
- * or {@link #embed(String, List)} call for a serving name must not
- * run on the Vert.x event loop. module-embedder's startup-phase
- * warm-up loop drives this on the main thread.
+ * <p>Marked {@link Singleton} (not {@code @ApplicationScoped}) so ARC
+ * does not generate a client proxy — required because
+ * {@link EmbeddingBackend} is discovered via
+ * {@code Instance<EmbeddingBackend>} across a Quarkus extension
+ * classloader boundary, and client proxies can't cross that cleanly.
  */
 @Singleton
 public class OpenVinoBackend implements EmbeddingBackend {
 
     private static final Logger log = LoggerFactory.getLogger(OpenVinoBackend.class);
 
-    private static final int DEFAULT_BATCH_SIZE = 32;
-    private static final int DEFAULT_TIMEOUT_MS = 30_000;
-
-    private final OpenVinoGrpcClient grpcClient;
-    private final ConcurrentHashMap<String, OpenVinoMutinyStreamingBatchedClient> clients = new ConcurrentHashMap<>();
-
     @Inject
-    public OpenVinoBackend(OpenVinoGrpcClient grpcClient) {
-        this.grpcClient = grpcClient;
-    }
+    @GrpcClient("ovms")
+    MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub;
+
+    @ConfigProperty(name = "embedder.openvino.batch-size", defaultValue = "32")
+    int batchSize;
+
+    @ConfigProperty(name = "embedder.openvino.timeout-ms", defaultValue = "30000")
+    int timeoutMs;
+
+    /**
+     * Per-servingName memoised {@code Uni<client>}. The {@code Uni} resolves
+     * when {@code ModelMetadata} discovery completes; subsequent
+     * subscriptions skip the RPC thanks to {@code memoize().indefinitely()}.
+     */
+    private final ConcurrentHashMap<String, Uni<OpenVinoMutinyStreamingBatchedClient>> clients = new ConcurrentHashMap<>();
 
     @Override
     public String name() {
@@ -62,13 +79,14 @@ public class OpenVinoBackend implements EmbeddingBackend {
         if (servingName == null || servingName.isBlank()) {
             return false;
         }
-        try {
-            getOrCreateClient(servingName);
-            return true;
-        } catch (Exception e) {
-            log.debug("OpenVINO backend does not support serving name '{}': {}", servingName, e.getMessage());
-            return false;
-        }
+        // Kick off (or reuse) the memoised discovery Uni. Don't await — fire
+        // a fire-and-forget subscription so the cache warms up in background.
+        // Actual success / failure is asserted at embed() time via the
+        // failed-Uni path, which the router can failover on.
+        clientUni(servingName).subscribe().with(
+                c -> {},
+                err -> log.debug("OpenVINO probe failed for '{}': {}", servingName, err.getMessage()));
+        return true;
     }
 
     @Override
@@ -76,15 +94,15 @@ public class OpenVinoBackend implements EmbeddingBackend {
         if (texts == null || texts.isEmpty()) {
             return Uni.createFrom().item(List.of());
         }
-        return getOrCreateClient(servingName).embed(texts);
+        return clientUni(servingName).chain(client -> client.embed(texts));
     }
 
-    private OpenVinoMutinyStreamingBatchedClient getOrCreateClient(String servingName) {
+    private Uni<OpenVinoMutinyStreamingBatchedClient> clientUni(String servingName) {
         return clients.computeIfAbsent(servingName, sn -> {
-            log.info("Creating OpenVINO client for serving name '{}' (batch={}, timeout={}ms)",
-                    sn, DEFAULT_BATCH_SIZE, DEFAULT_TIMEOUT_MS);
-            return new OpenVinoMutinyStreamingBatchedClient(
-                    grpcClient.getChannel(), sn, DEFAULT_BATCH_SIZE, DEFAULT_TIMEOUT_MS);
+            log.info("Registering OpenVINO client Uni for serving name '{}' (batch={}, timeout={}ms)",
+                    sn, batchSize, timeoutMs);
+            return OpenVinoMutinyStreamingBatchedClient.create(stub, sn, batchSize, timeoutMs)
+                    .memoize().indefinitely();
         });
     }
 }

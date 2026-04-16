@@ -3,7 +3,6 @@ package ai.pipestream.quarkus.openvino.runtime;
 import com.google.protobuf.ByteString;
 import inference.GrpcPredictV2;
 import inference.MutinyGRPCInferenceServiceGrpc;
-import io.grpc.Channel;
 import io.smallrye.mutiny.Uni;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,13 +27,17 @@ public class OpenVinoMutinyUnaryBatchedClient {
     private final AtomicLong totalLatencyMs = new AtomicLong(0);
     private final AtomicLong totalTextsProcessed = new AtomicLong(0);
 
-    public OpenVinoMutinyUnaryBatchedClient(Channel channel, String modelName, int batchSize, int timeoutMs) {
-        this(channel, OpenVinoModelDescriptor.discover(channel, modelName, timeoutMs), batchSize, timeoutMs);
+    public static Uni<OpenVinoMutinyUnaryBatchedClient> create(
+            MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+            String modelName, int batchSize, int timeoutMs) {
+        return OpenVinoModelDescriptor.discover(stub, modelName, timeoutMs)
+                .map(descriptor -> new OpenVinoMutinyUnaryBatchedClient(stub, descriptor, batchSize, timeoutMs));
     }
 
-    public OpenVinoMutinyUnaryBatchedClient(Channel channel, OpenVinoModelDescriptor descriptor,
+    public OpenVinoMutinyUnaryBatchedClient(MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+                                            OpenVinoModelDescriptor descriptor,
                                             int batchSize, int timeoutMs) {
-        this.stub = MutinyGRPCInferenceServiceGrpc.newMutinyStub(channel).withCompression("gzip");
+        this.stub = stub.withCompression("gzip");
         this.descriptor = descriptor;
         this.batchSize = batchSize;
         this.requestTimeout = Duration.ofMillis(timeoutMs);
