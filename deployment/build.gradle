@@ -1,10 +1,17 @@
+import org.gradle.plugins.signing.Sign
+
 plugins {
     id 'java-library'
+    alias(libs.plugins.maven.publish)
+    id 'signing'
+    alias(libs.plugins.nmcp.single)
 }
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21
+    withJavadocJar()
+    withSourcesJar()
 }
 
 description = 'Quarkus OpenVINO Embeddings Extension - Deployment'
@@ -19,10 +26,85 @@ dependencies {
     implementation 'io.quarkus:quarkus-arc-deployment'
     implementation 'io.quarkus:quarkus-core-deployment'
 
-    // module-embedder-api deployment module — required so Quarkus
-    // ARC properly indexes the EmbeddingBackend interface at build time.
     implementation "ai.pipestream.module:module-embedder-api-deployment:${pipestreamBomVersion}"
 
     annotationProcessor platform(libs.quarkus.bom)
     annotationProcessor 'io.quarkus:quarkus-extension-processor'
+}
+
+tasks.withType(Javadoc).configureEach { task ->
+    task.options.addStringOption('Xdoclint:-missing', '-quiet')
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+            pom {
+                name.set('Quarkus OpenVINO Embeddings Extension - Deployment')
+                description.set('Quarkus extension deployment module for OpenVINO Model Server embedding support')
+                url.set('https://github.com/ai-pipestream/pipestream-embedder-openvino')
+
+                licenses {
+                    license {
+                        name.set('MIT License')
+                        url.set('https://opensource.org/license/mit')
+                    }
+                }
+
+                developers {
+                    developer {
+                        id.set('krickert')
+                        name.set('Pipestream Engine Team')
+                    }
+                }
+
+                scm {
+                    connection.set('scm:git:git://github.com/ai-pipestream/pipestream-embedder-openvino.git')
+                    developerConnection.set('scm:git:ssh://github.com/ai-pipestream/pipestream-embedder-openvino.git')
+                    url.set('https://github.com/ai-pipestream/pipestream-embedder-openvino')
+                }
+            }
+        }
+    }
+
+    repositories {
+        mavenLocal()
+
+        if (System.getenv("GITHUB_ACTOR") != null) {
+            maven {
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/ai-pipestream/pipestream-embedder-openvino")
+                credentials {
+                    username = System.getenv("GITHUB_ACTOR")
+                    password = System.getenv("GITHUB_TOKEN")
+                }
+            }
+        }
+    }
+}
+
+signing {
+    def signingKey = System.getenv("GPG_PRIVATE_KEY")
+    def signingPassword = System.getenv("GPG_PASSPHRASE")
+
+    if (signingKey && signingPassword) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+        sign publishing.publications.maven
+    }
+}
+
+afterEvaluate {
+    tasks.matching { it.name.startsWith("nmcpZipAllPublications") || it.name.startsWith("nmcpPublishAllPublicationsToCentralPortal") }
+        .configureEach { nmcpTask ->
+            nmcpTask.dependsOn(tasks.withType(Sign))
+        }
+}
+
+nmcp {
+    publishAllPublicationsToCentralPortal {
+        username = providers.environmentVariable("MAVEN_CENTRAL_USERNAME")
+        password = providers.environmentVariable("MAVEN_CENTRAL_PASSWORD")
+        publishingType = "AUTOMATIC"
+    }
 }
