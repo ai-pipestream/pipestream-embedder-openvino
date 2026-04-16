@@ -1,0 +1,58 @@
+# OpenVINO Model Server — embedder pipelines
+#
+# Two services, both serving the same DAG pipelines (minilm_pipeline + mpnet_pipeline)
+# from the same model directory, but routing the embedding model to different devices.
+#
+#   ovms-cpu  : :9001 (host) -> :9000 (container)   target_device CPU
+#   ovms-gpu  : :9002 (host) -> :9000 (container)   target_device GPU (Intel Arc / iGPU / dGPU)
+#
+# Profiles let you bring up either or both:
+#   docker compose --profile cpu up -d
+#   docker compose --profile gpu up -d
+#   docker compose --profile all up -d
+#
+# Required:
+#   OVMS_MODELS_DIR — host path to the exported model layout produced by
+#                      scripts/setup-models.sh. Defaults to $HOME/ovms-models.
+#
+# GPU notes:
+#   - The host needs an Intel GPU exposed via /dev/dri.
+#   - OVMS_RENDER_GID must match the host's render group GID. Find it with:
+#         getent group render | cut -d: -f3
+#     Defaults to 993, which matches most Ubuntu/Debian installs.
+
+services:
+
+  ovms-cpu:
+    image: openvino/model_server:latest
+    container_name: ovms-cpu
+    profiles: [cpu, all]
+    ports:
+      - "${OVMS_CPU_PORT:-9001}:9000"
+    environment:
+      - MODEL_LOADING_TIMEOUT=300
+    volumes:
+      - ${OVMS_MODELS_DIR:-${HOME}/ovms-models}:/models:ro
+    command:
+      - --config_path=/models/config-cpu.json
+      - --port=9000
+    restart: unless-stopped
+
+  ovms-gpu:
+    image: openvino/model_server:latest-gpu
+    container_name: ovms-gpu
+    profiles: [gpu, all]
+    ports:
+      - "${OVMS_GPU_PORT:-9002}:9000"
+    environment:
+      - MODEL_LOADING_TIMEOUT=300
+    volumes:
+      - ${OVMS_MODELS_DIR:-${HOME}/ovms-models}:/models:ro
+    devices:
+      - /dev/dri
+    group_add:
+      - "${OVMS_RENDER_GID:-993}"
+    command:
+      - --config_path=/models/config-gpu.json
+      - --port=9000
+    restart: unless-stopped

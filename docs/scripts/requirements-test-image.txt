@@ -1,0 +1,7 @@
+openvino
+openvino-tokenizers
+optimum[openvino]
+sentence-transformers
+transformers
+torch
+pillow
