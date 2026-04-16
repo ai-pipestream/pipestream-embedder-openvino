@@ -2,6 +2,8 @@ package ai.pipestream.quarkus.openvino.runtime;
 
 import ai.pipestream.module.embedder.spi.EmbeddingBackend;
 import inference.MutinyGRPCInferenceServiceGrpc;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -31,15 +33,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * quarkus.stork.ovms.service-discovery.type=consul
  * </pre>
  *
- * <p><b>Fully reactive.</b> Every gRPC call on the hot path returns a
- * {@link Uni} — no {@code .await()}, no blocking stubs. Model metadata
- * discovery ({@code ModelMetadata} RPC) runs asynchronously and its
- * result is memoised per serving name so subsequent {@code embed()}
- * calls skip the RPC. {@link #supports(String)} is the one synchronous
- * method on this interface; it kicks off metadata discovery in the
- * background and returns optimistically — actual readiness is asserted
- * at {@code embed()} time, where a failure surfaces as a failed
- * {@code Uni} that the router can failover on.
+ * <p><b>Reactive contract (honest version).</b> Every method on
+ * {@link EmbeddingBackend} that does I/O returns a {@link Uni}. There
+ * is no {@code .await()}, no blocking stub, no
+ * {@code Uni.createFrom().item(() -> syncBlock)} wrapper anywhere on
+ * the hot path. {@link #supports(String)} runs the real probe
+ * reactively by chaining {@link OpenVinoModelDescriptor#discover} →
+ * {@code map(c -> true)} with errors surfaced via {@code .invoke(log)}
+ * and recovered to {@code false} — callers get a truthful probe
+ * result, not an optimistic {@code true} with the actual probe fired
+ * into the void.
  *
  * <p>Marked {@link Singleton} (not {@code @ApplicationScoped}) so ARC
  * does not generate a client proxy — required because
@@ -75,18 +78,28 @@ public class OpenVinoBackend implements EmbeddingBackend {
     }
 
     @Override
-    public boolean supports(String servingName) {
+    public Uni<Boolean> supports(String servingName) {
         if (servingName == null || servingName.isBlank()) {
-            return false;
+            return Uni.createFrom().item(Boolean.FALSE);
         }
-        // Kick off (or reuse) the memoised discovery Uni. Don't await — fire
-        // a fire-and-forget subscription so the cache warms up in background.
-        // Actual success / failure is asserted at embed() time via the
-        // failed-Uni path, which the router can failover on.
-        clientUni(servingName).subscribe().with(
-                c -> {},
-                err -> log.debug("OpenVINO probe failed for '{}': {}", servingName, err.getMessage()));
-        return true;
+        // Honest probe: only "this specific model isn't served" signals
+        // (gRPC NOT_FOUND / UNIMPLEMENTED) resolve to false. Every other
+        // error (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, UNAUTHENTICATED,
+        // PERMISSION_DENIED, plain RuntimeException, etc.) propagates so
+        // the router, ops, and metrics see the real failure instead of a
+        // silent "backend doesn't support this model" that leaves a sick
+        // backend silently disabled forever.
+        return clientUni(servingName)
+                .map(c -> Boolean.TRUE)
+                .onFailure(StatusRuntimeException.class).recoverWithUni(err -> {
+                    StatusRuntimeException sre = (StatusRuntimeException) err;
+                    Status.Code code = sre.getStatus().getCode();
+                    if (code == Status.Code.NOT_FOUND || code == Status.Code.UNIMPLEMENTED) {
+                        log.info("OVMS does not serve '{}': {}", servingName, sre.getStatus());
+                        return Uni.createFrom().item(Boolean.FALSE);
+                    }
+                    return Uni.createFrom().failure(err);
+                });
     }
 
     @Override

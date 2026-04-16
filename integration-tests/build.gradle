@@ -21,13 +21,13 @@ dependencies {
     testImplementation libs.grpc.protobuf
     testImplementation 'io.quarkus:quarkus-grpc'
 
-    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
-    testImplementation 'org.assertj:assertj-core:3.27.7'
-    testImplementation 'org.testcontainers:testcontainers:2.0.4'
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation libs.assertj.core
+    testImplementation libs.testcontainers.core
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.4'
 
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.17'
+    testRuntimeOnly 'org.slf4j:slf4j-simple'
 }
 
 tasks.withType(Test).configureEach {
