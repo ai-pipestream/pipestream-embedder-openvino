@@ -1,30 +1,75 @@
-name: Release and Publish
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      release_type:
-        description: 'Release type (patch, minor, major, or manual)'
+      incrementer:
+        description: 'Version increment type'
         required: true
-        default: 'patch'
+        default: 'incrementPatch'
         type: choice
         options:
-          - patch
-          - minor
-          - major
-          - manual
-      custom_version:
-        description: 'Custom version (only for manual release type, e.g., 1.0.0)'
-        required: false
-        type: string
+          - incrementPatch
+          - incrementMinor
+          - incrementMajor
 
 jobs:
-  release-and-publish:
-    uses: ai-pipestream/.github/.github/workflows/reusable-service-release.yml@main
-    with:
-      release_type: ${{ inputs.release_type }}
-      custom_version: ${{ inputs.custom_version }}
-      docker-image-name: pipestream-embedder-openvino
-      maven-artifact-id: pipestream-embedder-openvino
-      dockerfile-path: runtime/src/main/docker/Dockerfile.jvm
-    secrets: inherit
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Build and Test
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew build -x :integration-tests:test
+
+      - name: Create Release Tag
+        run: ./gradlew createRelease -Prelease.incrementer=${{ inputs.incrementer }} -Prelease.disableChecks
+
+      - name: Publish to Maven Central and GitHub Packages
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./gradlew publishAllPublicationsToCentralPortal
+          ./gradlew publishAllPublicationsToGitHubPackagesRepository
+
+      - name: Push Release Tag
+        run: |
+          git push origin main
+          git push --tags
+
+      - name: Get version
+        id: version
+        run: echo "version=$(./gradlew -q currentVersion | grep 'Project version' | awk '{print $3}')" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
