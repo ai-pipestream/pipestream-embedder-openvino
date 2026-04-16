@@ -1,12 +1,9 @@
-import org.gradle.plugins.signing.Sign
-
 plugins {
     alias(libs.plugins.java.library)
     alias(libs.plugins.quarkus.extension)
     alias(libs.plugins.proto.toolchain)
     alias(libs.plugins.maven.publish)
     id 'signing'
-    alias(libs.plugins.nmcp.single)
 }
 
 java {
@@ -132,17 +129,3 @@ signing {
     }
 }
 
-afterEvaluate {
-    tasks.matching { it.name.startsWith("nmcpZipAllPublications") || it.name.startsWith("nmcpPublishAllPublicationsToCentralPortal") }
-        .configureEach { nmcpTask ->
-            nmcpTask.dependsOn(tasks.withType(Sign))
-        }
-}
-
-nmcp {
-    publishAllPublicationsToCentralPortal {
-        username = providers.environmentVariable("MAVEN_CENTRAL_USERNAME")
-        password = providers.environmentVariable("MAVEN_CENTRAL_PASSWORD")
-        publishingType = "AUTOMATIC"
-    }
-}

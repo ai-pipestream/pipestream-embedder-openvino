@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.axion.release)
+    alias(libs.plugins.nmcp.bundle)
 }
 
 scmVersion {
@@ -17,4 +18,26 @@ scmVersion {
 allprojects {
     group = 'ai.pipestream.module'
     version = rootProject.scmVersion.version
+}
+
+// Required by nmcp.bundle's internal dependency resolution.
+repositories {
+    mavenLocal()
+    mavenCentral()
+    gradlePluginPortal()
+}
+
+// Multi-subproject Central publishing — aggregation pattern. Per-subproject
+// nmcp.single is incompatible with >1 publishing subproject (gratatouille
+// build-service registration race). Mirrors pipestream-platform's working
+// config.
+nmcpAggregation {
+    publishAllProjectsProbablyBreakingProjectIsolation()
+
+    centralPortal {
+        username = providers.environmentVariable('MAVEN_CENTRAL_USERNAME')
+        password = providers.environmentVariable('MAVEN_CENTRAL_PASSWORD')
+        publishingType = 'AUTOMATIC'
+        baseUrl = 'https://central.sonatype.com/'
+    }
 }
