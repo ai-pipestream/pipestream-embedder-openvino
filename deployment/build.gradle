@@ -18,7 +18,7 @@ def pipestreamBomVersion = findProperty('pipestreamBomVersion')
 dependencies {
     implementation platform(libs.quarkus.bom)
 
-    implementation project(':runtime')
+    implementation project(':quarkus-openvino-embeddings')
 
     implementation 'io.quarkus:quarkus-arc-deployment'
     implementation 'io.quarkus:quarkus-core-deployment'

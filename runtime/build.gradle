@@ -18,7 +18,7 @@ description = 'Quarkus OpenVINO Embeddings Extension - Runtime'
 def pipestreamBomVersion = findProperty('pipestreamBomVersion')
 
 quarkusExtension {
-    deploymentModule = 'deployment'
+    deploymentModule = 'quarkus-openvino-embeddings-deployment'
 }
 
 // Proto configuration - fetch KServe V2 Protocol from KServe repository

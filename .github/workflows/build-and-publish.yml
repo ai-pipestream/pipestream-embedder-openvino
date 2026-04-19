@@ -35,7 +35,7 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./gradlew build -x :integration-tests:test
+        run: ./gradlew build -x :quarkus-openvino-embeddings-integration-tests:test
 
       - name: Upload test results
         if: always()
@@ -72,7 +72,7 @@ jobs:
           MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew publishAllPublicationsToCentralPortalSnapshots --no-daemon --stacktrace
+        run: ./gradlew publishAggregationToCentralPortalSnapshots --no-daemon --stacktrace
 
       - name: Publish Snapshots to GitHub Packages
         env:
