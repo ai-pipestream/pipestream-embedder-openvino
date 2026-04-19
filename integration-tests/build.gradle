@@ -12,7 +12,7 @@ java {
 dependencies {
     testImplementation platform(libs.quarkus.bom)
 
-    testImplementation project(':runtime')
+    testImplementation project(':quarkus-openvino-embeddings')
 
     testImplementation 'io.smallrye.reactive:mutiny'
     testImplementation 'org.slf4j:slf4j-api'

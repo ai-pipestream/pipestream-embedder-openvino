@@ -7,9 +7,19 @@ pluginManagement {
 
 rootProject.name = 'pipestream-embedder-openvino'
 
-include 'runtime'
-include 'deployment'
-include 'integration-tests'
+// Explicit project names so published artifactIds are
+// `quarkus-openvino-embeddings[-deployment|-integration-tests]` rather than
+// the bare directory names (`runtime`, `deployment`, `integration-tests`),
+// which would collide in the `ai.pipestream.module` namespace. Same pattern
+// as pipestream-platform's extensions.
+include 'quarkus-openvino-embeddings'
+project(':quarkus-openvino-embeddings').projectDir = file('runtime')
+
+include 'quarkus-openvino-embeddings-deployment'
+project(':quarkus-openvino-embeddings-deployment').projectDir = file('deployment')
+
+include 'quarkus-openvino-embeddings-integration-tests'
+project(':quarkus-openvino-embeddings-integration-tests').projectDir = file('integration-tests')
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
