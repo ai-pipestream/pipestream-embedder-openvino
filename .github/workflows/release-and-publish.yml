@@ -42,7 +42,7 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./gradlew build -x :integration-tests:test
+        run: ./gradlew build -x :quarkus-openvino-embeddings-integration-tests:test
 
       - name: Create Release Tag
         run: ./gradlew createRelease -Prelease.incrementer=${{ inputs.incrementer }} -Prelease.disableChecks
@@ -55,7 +55,7 @@ jobs:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ./gradlew publishAllPublicationsToCentralPortal
+          ./gradlew publishAggregationToCentralPortal
           ./gradlew publishAllPublicationsToGitHubPackagesRepository
 
       - name: Push Release Tag
