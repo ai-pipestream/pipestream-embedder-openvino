@@ -1,0 +1,5 @@
+run_at,provider,label,dimensions,batch_size,total_sentences,total_batches,wall_ms,p50_ms,p95_ms,p99_ms,min_ms,max_ms,mean_ms,sentences_per_sec,batches_per_sec,failures,notes
+2026-05-13T04:24:39.593259151Z,ovms-streaming:minilm_pipeline,minilm_pipeline-streaming-batch32-gpu,384,32,32555,1018,1916,1.742,2.656,4.255,1.531,18.240,1.882,16991.127,531.315,0,b70-vt-postpsu
+2026-05-13T04:24:44.081888835Z,ovms-streaming:mpnet_pipeline,mpnet_pipeline-streaming-batch32-gpu,768,32,32555,1018,4319,4.085,5.659,5.933,3.956,28.042,4.242,7537.624,235.703,0,b70-vt-postpsu
+2026-05-13T04:25:06.381949295Z,ovms-streaming:minilm_pipeline,minilm_pipeline-streaming-batch32-cpu,384,32,32555,1018,5737,5.502,6.549,7.742,4.258,11.807,5.634,5674.569,177.445,0,cpu-vt-fp16
+2026-05-13T04:25:31.769889188Z,ovms-streaming:mpnet_pipeline,mpnet_pipeline-streaming-batch32-cpu,768,32,32555,1018,25268,24.830,25.657,26.377,15.183,28.532,24.818,1288.388,40.288,0,cpu-vt-fp16

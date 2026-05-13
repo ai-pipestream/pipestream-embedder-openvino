@@ -1,23 +1,25 @@
 package ai.pipestream.quarkus.openvino.runtime;
 
+import inference.GRPCInferenceServiceGrpc;
 import inference.GrpcPredictV2;
-import inference.MutinyGRPCInferenceServiceGrpc;
-import io.smallrye.mutiny.Uni;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Immutable snapshot of an OVMS model's tensor metadata, discovered via the
  * KServe v2 {@code ModelMetadata} RPC. Holds the model's declared input
- * tensor name, output tensor name, and embedding dimension so the Mutiny
- * batching clients don't have to hardcode any of them.
+ * tensor name, output tensor name, and embedding dimension so the batching
+ * client doesn't have to hardcode any of them.
  *
- * <p>{@link #discover(MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub, String, int)}
- * returns a {@link Uni} — never blocks the caller. The single RPC is bounded
- * by {@code timeoutMs} and runs on whatever executor the subscriber uses.
- * Models whose output has a dynamic ({@code -1}) hidden dimension are
+ * <p><b>Blocking by design.</b> {@link #discover} runs a single short
+ * {@code ModelMetadata} RPC under a per-call deadline and returns the
+ * descriptor synchronously. Callers must already be on a virtual thread
+ * (or an explicit worker thread); the SPI boundary in
+ * {@link OpenVinoBackend} is responsible for routing the call onto a VT.
+ *
+ * <p>Models whose output has a dynamic ({@code -1}) hidden dimension are
  * rejected at discovery time because the client needs a static dim to
  * pre-size its float arrays.
  */
@@ -38,27 +40,31 @@ public final class OpenVinoModelDescriptor {
     }
 
     /**
-     * Asynchronously calls {@code ModelMetadata} and builds a descriptor for
-     * the named model. Returns a {@link Uni} that resolves with the descriptor
-     * on success or fails if the model is missing, has an unsupported data
-     * type, or has a dynamic hidden dimension.
+     * Calls {@code ModelMetadata} synchronously and builds a descriptor for
+     * the named model. Throws if the model is missing, has an unsupported
+     * data type, or has a dynamic hidden dimension. The single RPC is
+     * bounded by {@code timeoutMs} via {@code stub.withDeadlineAfter}.
      *
-     * @param stub      injected Mutiny stub — typically provided by Quarkus
-     *                  {@code @GrpcClient("ovms")}
+     * @param stub      blocking gRPC stub — typically obtained from
+     *                  {@code GRPCInferenceServiceGrpc.newBlockingStub(channel)}
+     *                  or injected via {@code @GrpcClient("ovms")} at the
+     *                  blocking-stub type
      * @param modelName the pipeline or model name as registered in OVMS config
      * @param timeoutMs deadline for the one-shot metadata call, in ms
      */
-    public static Uni<OpenVinoModelDescriptor> discover(
-            MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub,
+    public static OpenVinoModelDescriptor discover(
+            GRPCInferenceServiceGrpc.GRPCInferenceServiceBlockingStub stub,
             String modelName,
             int timeoutMs) {
         GrpcPredictV2.ModelMetadataRequest req = GrpcPredictV2.ModelMetadataRequest.newBuilder()
                 .setName(modelName)
                 .build();
 
-        return stub.modelMetadata(req)
-                .ifNoItem().after(Duration.ofMillis(timeoutMs)).fail()
-                .map(meta -> buildDescriptor(modelName, meta));
+        GrpcPredictV2.ModelMetadataResponse meta = stub
+                .withDeadlineAfter(timeoutMs, TimeUnit.MILLISECONDS)
+                .modelMetadata(req);
+
+        return buildDescriptor(modelName, meta);
     }
 
     private static OpenVinoModelDescriptor buildDescriptor(String modelName, GrpcPredictV2.ModelMetadataResponse meta) {

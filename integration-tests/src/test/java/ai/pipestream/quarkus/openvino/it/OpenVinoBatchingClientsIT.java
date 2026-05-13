@@ -1,12 +1,12 @@
 package ai.pipestream.quarkus.openvino.it;
 
 import ai.pipestream.quarkus.openvino.runtime.OpenVinoModelDescriptor;
-import ai.pipestream.quarkus.openvino.runtime.OpenVinoMutinyStreamingBatchedClient;
-import inference.MutinyGRPCInferenceServiceGrpc;
+import ai.pipestream.quarkus.openvino.runtime.OpenVinoStreamingBatchedClient;
+import inference.GRPCInferenceServiceGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,19 +28,26 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Integration tests for OpenVINO batching clients against a real OVMS instance
+ * Integration tests for the OpenVINO batched client against a real OVMS instance
  * serving the five-model DAG pipelines exported by
  * {@code module-embedder/docs/openvino/scripts/setup-models.sh}.
- * <p>
- * By default this class starts OVMS via testcontainers using the pre-baked
+ *
+ * <p>By default this class starts OVMS via testcontainers using the pre-baked
  * GHCR image and waits for both pipelines to become AVAILABLE.
- * <p>
- * For local development against an already-running OVMS, set either
+ *
+ * <p>For local development against an already-running OVMS, set either
  * {@code -Dovms.host/-Dovms.port} or {@code OVMS_HOST/OVMS_PORT}:
  * <pre>
  *   ./gradlew :quarkus-openvino-embeddings-integration-tests:test \
  *     -Dovms.host=localhost -Dovms.port=9001
  * </pre>
+ *
+ * <p><b>Concurrency model.</b> Tests now call the blocking {@code GRPCInferenceServiceGrpc}
+ * stub directly. No Mutiny, no {@code .await().atMost(...)}. The runtime under
+ * test wraps its public SPI methods in {@code Uni.createFrom().item(...)} but
+ * the underlying implementation classes ({@link OpenVinoModelDescriptor},
+ * {@link OpenVinoStreamingBatchedClient}) are pure synchronous Java and the
+ * tests exercise them at that layer.
  */
 @DisplayName("OpenVINO Batching Clients Integration Tests")
 @Testcontainers
@@ -87,7 +94,7 @@ public class OpenVinoBatchingClientsIT {
     private static final int TIMEOUT_MS = 30_000;
 
     private ManagedChannel channel;
-    private MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub;
+    private GRPCInferenceServiceGrpc.GRPCInferenceServiceBlockingStub stub;
 
     private static GenericContainer<?> newOvmsContainer() {
         return new OvmsContainer()
@@ -130,11 +137,7 @@ public class OpenVinoBatchingClientsIT {
         String host = USE_EXTERNAL_OVMS ? EXTERNAL_HOST : ovms.getHost();
         int port = USE_EXTERNAL_OVMS ? EXTERNAL_PORT : ovms.getMappedPort(9000);
         channel = ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
-        stub = MutinyGRPCInferenceServiceGrpc.newMutinyStub(channel);
-    }
-
-    private static <T> T await(io.smallrye.mutiny.Uni<T> uni) {
-        return uni.await().atMost(Duration.ofMillis(TIMEOUT_MS));
+        stub = GRPCInferenceServiceGrpc.newBlockingStub(channel);
     }
 
     @AfterEach
@@ -147,7 +150,7 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("Model descriptor discovery returns expected input/output/dims")
     void testModelDescriptorDiscovery() {
-        OpenVinoModelDescriptor desc = await(OpenVinoModelDescriptor.discover(stub, PIPELINE, TIMEOUT_MS));
+        OpenVinoModelDescriptor desc = OpenVinoModelDescriptor.discover(stub, PIPELINE, TIMEOUT_MS);
         assertEquals(PIPELINE, desc.modelName());
         assertEquals(EXPECTED_DIMS, desc.dimensions());
         assertNotNull(desc.inputTensorName());
@@ -159,9 +162,8 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("Streaming client: single batch produces 384-dim unit vectors")
     void testStreamingSingleBatch() {
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        List<float[]> embeddings = client.embed(List.of("hello world", "openvino is fast", "quick brown fox"))
-                .await().indefinitely();
+        var client = OpenVinoStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS);
+        List<float[]> embeddings = client.embed(List.of("hello world", "openvino is fast", "quick brown fox"));
 
         assertEquals(3, embeddings.size());
         for (float[] v : embeddings) {
@@ -174,9 +176,9 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("Streaming client: texts exceeding batchSize are split into multiple gRPC calls")
     void testStreamingMultipleBatches() {
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 3, TIMEOUT_MS));
+        var client = OpenVinoStreamingBatchedClient.create(stub, PIPELINE, 3, TIMEOUT_MS);
         List<String> texts = List.of("a", "b", "c", "d", "e", "f", "g"); // 7 texts, batchSize=3 → 3 batches
-        List<float[]> embeddings = client.embed(texts).await().indefinitely();
+        List<float[]> embeddings = client.embed(texts);
 
         assertEquals(7, embeddings.size());
         for (float[] v : embeddings) {
@@ -190,12 +192,12 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("Semantic check: related sentences have higher cosine similarity than unrelated")
     void testSemanticCosineSimilarity() {
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
+        var client = OpenVinoStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS);
         List<String> texts = List.of(
                 "the quick brown fox jumps over the lazy dog",
                 "another sentence about dogs and pets",
                 "a completely different topic about quantum physics");
-        List<float[]> e = client.embed(texts).await().indefinitely();
+        List<float[]> e = client.embed(texts);
 
         double dogSim = cosineSimilarity(e.get(0), e.get(1));
         double unrelatedSim = cosineSimilarity(e.get(0), e.get(2));
@@ -209,8 +211,8 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("Empty input returns empty list (no gRPC call)")
     void testEmptyInput() {
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        List<float[]> result = client.embed(List.of()).await().indefinitely();
+        var client = OpenVinoStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS);
+        List<float[]> result = client.embed(List.of());
         assertNotNull(result);
         assertTrue(result.isEmpty());
     }
@@ -218,16 +220,16 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("MPNet pipeline: 768-dim sentence embeddings, discovery + semantic check")
     void testMpnetPipeline() {
-        OpenVinoModelDescriptor desc = await(OpenVinoModelDescriptor.discover(stub, MPNET_PIPELINE, TIMEOUT_MS));
+        OpenVinoModelDescriptor desc = OpenVinoModelDescriptor.discover(stub, MPNET_PIPELINE, TIMEOUT_MS);
         assertEquals(MPNET_PIPELINE, desc.modelName());
         assertEquals(MPNET_EXPECTED_DIMS, desc.dimensions());
 
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, MPNET_PIPELINE, 8, TIMEOUT_MS));
+        var client = OpenVinoStreamingBatchedClient.create(stub, MPNET_PIPELINE, 8, TIMEOUT_MS);
         List<String> texts = List.of(
                 "the quick brown fox jumps over the lazy dog",
                 "another sentence about dogs and pets",
                 "a completely different topic about quantum physics");
-        List<float[]> e = client.embed(texts).await().indefinitely();
+        List<float[]> e = client.embed(texts);
 
         assertEquals(3, e.size());
         for (float[] v : e) {
@@ -246,15 +248,15 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("MiniLM and MPNet produce independent embeddings of different dimensions")
     void testMinilmAndMpnetSideBySide() {
-        var minilm = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        var mpnet = await(OpenVinoMutinyStreamingBatchedClient.create(stub, MPNET_PIPELINE, 8, TIMEOUT_MS));
+        var minilm = OpenVinoStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS);
+        var mpnet = OpenVinoStreamingBatchedClient.create(stub, MPNET_PIPELINE, 8, TIMEOUT_MS);
 
         assertEquals(EXPECTED_DIMS, minilm.getDescriptor().dimensions());
         assertEquals(MPNET_EXPECTED_DIMS, mpnet.getDescriptor().dimensions());
 
         List<String> texts = List.of("the quick brown fox", "another completely unrelated topic");
-        List<float[]> a = minilm.embed(texts).await().indefinitely();
-        List<float[]> b = mpnet.embed(texts).await().indefinitely();
+        List<float[]> a = minilm.embed(texts);
+        List<float[]> b = mpnet.embed(texts);
 
         assertEquals(EXPECTED_DIMS, a.get(0).length);
         assertEquals(MPNET_EXPECTED_DIMS, b.get(0).length);
@@ -275,16 +277,16 @@ public class OpenVinoBatchingClientsIT {
         Assumptions.assumeTrue(BGE_M3_ENABLED,
                 "BGE-M3 is not included in the default minilm+mpnet OVMS test image. "
                         + "Enable with -Dovms.enableBgeM3=true against an OVMS deployment that includes bge_m3_pipeline.");
-        OpenVinoModelDescriptor desc = await(OpenVinoModelDescriptor.discover(stub, BGE_M3_PIPELINE, TIMEOUT_MS));
+        OpenVinoModelDescriptor desc = OpenVinoModelDescriptor.discover(stub, BGE_M3_PIPELINE, TIMEOUT_MS);
         assertEquals(BGE_M3_PIPELINE, desc.modelName());
         assertEquals(BGE_M3_EXPECTED_DIMS, desc.dimensions());
 
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, BGE_M3_PIPELINE, 8, TIMEOUT_MS));
+        var client = OpenVinoStreamingBatchedClient.create(stub, BGE_M3_PIPELINE, 8, TIMEOUT_MS);
         List<String> texts = List.of(
                 "the quick brown fox jumps over the lazy dog",
                 "another sentence about dogs and pets",
                 "a completely different topic about quantum physics");
-        List<float[]> e = client.embed(texts).await().indefinitely();
+        List<float[]> e = client.embed(texts);
 
         assertEquals(3, e.size());
         for (float[] v : e) {
@@ -303,9 +305,9 @@ public class OpenVinoBatchingClientsIT {
     @Test
     @DisplayName("Metrics are collected across multiple embed calls")
     void testMetricsCollection() {
-        var client = await(OpenVinoMutinyStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS));
-        client.embed(List.of("one", "two", "three")).await().indefinitely();
-        client.embed(List.of("four", "five")).await().indefinitely();
+        var client = OpenVinoStreamingBatchedClient.create(stub, PIPELINE, 8, TIMEOUT_MS);
+        client.embed(List.of("one", "two", "three"));
+        client.embed(List.of("four", "five"));
 
         assertTrue(client.getTotalRequests() >= 2);
         assertEquals(5, client.getTotalTextsProcessed());
