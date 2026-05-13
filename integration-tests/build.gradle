@@ -27,7 +27,11 @@ dependencies {
     testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.4'
 
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testRuntimeOnly 'org.slf4j:slf4j-simple'
+    // Route slf4j → JUL → JBoss LogManager, which is the same logging stack
+    // Quarkus uses at runtime. The JVM property java.util.logging.manager
+    // (set in the Test task config below) tells JUL to use JBoss LogManager.
+    testRuntimeOnly 'org.jboss.logmanager:jboss-logmanager'
+    testRuntimeOnly 'org.jboss.slf4j:slf4j-jboss-logmanager'
 }
 
 tasks.withType(Test).configureEach {
@@ -37,10 +41,13 @@ tasks.withType(Test).configureEach {
         showStandardStreams = true
     }
     systemProperty 'java.util.logging.manager', 'org.jboss.logmanager.LogManager'
-    ['ovms.host', 'ovms.port', 'ovms.enableBgeM3'].each { key ->
-        def value = System.getProperty(key)
-        if (value != null) {
-            systemProperty key, value
+    // Forward every -Dovms.* flag into the test JVM. Covers the IT-level
+    // overrides (ovms.host, ovms.port, ovms.enableBgeM3) plus the benchmark
+    // toggles (ovms.benchmark, ovms.benchmark.notes, ovms.benchmark.output,
+    // ovms.benchmark.batch, ovms.benchmark.warmup, ovms.benchmark.sentences).
+    System.properties.each { key, value ->
+        if (key.toString().startsWith('ovms.')) {
+            systemProperty key.toString(), value.toString()
         }
     }
     jvmArgs '-Xmx2g'

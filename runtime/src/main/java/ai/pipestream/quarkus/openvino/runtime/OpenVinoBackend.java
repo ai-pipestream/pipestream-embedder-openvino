@@ -1,11 +1,10 @@
 package ai.pipestream.quarkus.openvino.runtime;
 
 import ai.pipestream.module.embedder.spi.EmbeddingBackend;
-import inference.MutinyGRPCInferenceServiceGrpc;
+import inference.GRPCInferenceServiceGrpc;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
-import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -16,11 +15,11 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * OpenVINO Model Server backend. Implements the single
- * {@link EmbeddingBackend} SPI over a KServe v2 gRPC transport using the
- * Quarkus {@link GrpcClient} stack — Stork service discovery, TLS,
- * deadlines, and interceptors are all configurable via
- * {@code quarkus.grpc.clients.ovms.*} keys, not hand-rolled.
+ * OpenVINO Model Server backend. Implements the {@link EmbeddingBackend}
+ * SPI over a KServe v2 gRPC transport using the Quarkus {@link GrpcClient}
+ * stack — Stork service discovery, TLS, deadlines, and interceptors are
+ * all configurable via {@code quarkus.grpc.clients.ovms.*} keys, not
+ * hand-rolled.
  *
  * <pre>
  * quarkus.grpc.clients.ovms.host=localhost
@@ -33,16 +32,21 @@ import java.util.concurrent.ConcurrentHashMap;
  * quarkus.stork.ovms.service-discovery.type=consul
  * </pre>
  *
- * <p><b>Reactive contract (honest version).</b> Every method on
- * {@link EmbeddingBackend} that does I/O returns a {@link Uni}. There
- * is no {@code .await()}, no blocking stub, no
- * {@code Uni.createFrom().item(() -> syncBlock)} wrapper anywhere on
- * the hot path. {@link #supports(String)} runs the real probe
- * reactively by chaining {@link OpenVinoModelDescriptor#discover} →
- * {@code map(c -> true)} with errors surfaced via {@code .invoke(log)}
- * and recovered to {@code false} — callers get a truthful probe
- * result, not an optimistic {@code true} with the actual probe fired
- * into the void.
+ * <p><b>Concurrency model.</b> Plain blocking Java throughout — the SPI
+ * is synchronous, the gRPC stub is the blocking variant, the batched
+ * client uses virtual-thread-per-task for sub-batch fan-out. Callers
+ * (e.g. {@code EmbedderGrpcImpl}, {@code EmbedderPipelineService}) are
+ * expected to invoke from a {@code @RunOnVirtualThread} entry point so
+ * the carrier is parked on I/O rather than burning a platform thread.
+ *
+ * <p><b>Honest probe semantics.</b> {@link #supports(String)} treats only
+ * "this specific model isn't served" signals (gRPC {@code NOT_FOUND} /
+ * {@code UNIMPLEMENTED}) as {@code false}. Every other gRPC error
+ * ({@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, {@code INTERNAL},
+ * {@code UNAUTHENTICATED}, {@code PERMISSION_DENIED}, plain
+ * {@code RuntimeException}) propagates so the router, ops, and metrics
+ * see the real failure instead of a silent "backend doesn't support this
+ * model" that leaves a sick backend disabled forever.
  *
  * <p>Marked {@link Singleton} (not {@code @ApplicationScoped}) so ARC
  * does not generate a client proxy — required because
@@ -57,7 +61,7 @@ public class OpenVinoBackend implements EmbeddingBackend {
 
     @Inject
     @GrpcClient("ovms")
-    MutinyGRPCInferenceServiceGrpc.MutinyGRPCInferenceServiceStub stub;
+    GRPCInferenceServiceGrpc.GRPCInferenceServiceBlockingStub stub;
 
     @ConfigProperty(name = "embedder.openvino.batch-size", defaultValue = "32")
     int batchSize;
@@ -66,11 +70,15 @@ public class OpenVinoBackend implements EmbeddingBackend {
     int timeoutMs;
 
     /**
-     * Per-servingName memoised {@code Uni<client>}. The {@code Uni} resolves
-     * when {@code ModelMetadata} discovery completes; subsequent
-     * subscriptions skip the RPC thanks to {@code memoize().indefinitely()}.
+     * Per-servingName cache of resolved clients. Populated lazily by the
+     * first {@link #supports(String)} or {@link #embed} call for a given
+     * model. Race-tolerant init: two concurrent first-calls may both run
+     * the {@code ModelMetadata} discovery RPC — the loser's client is
+     * discarded (it's a snapshot, not a long-lived resource), the winner
+     * is published via {@link ConcurrentHashMap#putIfAbsent}. Failed
+     * discoveries are NOT cached; the caller may retry later.
      */
-    private final ConcurrentHashMap<String, Uni<OpenVinoMutinyStreamingBatchedClient>> clients = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, OpenVinoStreamingBatchedClient> clients = new ConcurrentHashMap<>();
 
     @Override
     public String name() {
@@ -78,44 +86,42 @@ public class OpenVinoBackend implements EmbeddingBackend {
     }
 
     @Override
-    public Uni<Boolean> supports(String servingName) {
+    public boolean supports(String servingName) {
         if (servingName == null || servingName.isBlank()) {
-            return Uni.createFrom().item(Boolean.FALSE);
+            return false;
         }
-        // Honest probe: only "this specific model isn't served" signals
-        // (gRPC NOT_FOUND / UNIMPLEMENTED) resolve to false. Every other
-        // error (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, UNAUTHENTICATED,
-        // PERMISSION_DENIED, plain RuntimeException, etc.) propagates so
-        // the router, ops, and metrics see the real failure instead of a
-        // silent "backend doesn't support this model" that leaves a sick
-        // backend silently disabled forever.
-        return clientUni(servingName)
-                .map(c -> Boolean.TRUE)
-                .onFailure(StatusRuntimeException.class).recoverWithUni(err -> {
-                    StatusRuntimeException sre = (StatusRuntimeException) err;
-                    Status.Code code = sre.getStatus().getCode();
-                    if (code == Status.Code.NOT_FOUND || code == Status.Code.UNIMPLEMENTED) {
-                        log.info("OVMS does not serve '{}': {}", servingName, sre.getStatus());
-                        return Uni.createFrom().item(Boolean.FALSE);
-                    }
-                    return Uni.createFrom().failure(err);
-                });
+        try {
+            clientFor(servingName);
+            return true;
+        } catch (StatusRuntimeException sre) {
+            Status.Code code = sre.getStatus().getCode();
+            if (code == Status.Code.NOT_FOUND || code == Status.Code.UNIMPLEMENTED) {
+                log.info("OVMS does not serve '{}': {}", servingName, sre.getStatus());
+                return false;
+            }
+            throw sre;
+        }
     }
 
     @Override
-    public Uni<List<float[]>> embed(String servingName, List<String> texts) {
+    public List<float[]> embed(String servingName, List<String> texts) {
         if (texts == null || texts.isEmpty()) {
-            return Uni.createFrom().item(List.of());
+            return List.of();
         }
-        return clientUni(servingName).chain(client -> client.embed(texts));
+        OpenVinoStreamingBatchedClient client = clientFor(servingName);
+        return client.embed(texts);
     }
 
-    private Uni<OpenVinoMutinyStreamingBatchedClient> clientUni(String servingName) {
-        return clients.computeIfAbsent(servingName, sn -> {
-            log.info("Registering OpenVINO client Uni for serving name '{}' (batch={}, timeout={}ms)",
-                    sn, batchSize, timeoutMs);
-            return OpenVinoMutinyStreamingBatchedClient.create(stub, sn, batchSize, timeoutMs)
-                    .memoize().indefinitely();
-        });
+    private OpenVinoStreamingBatchedClient clientFor(String servingName) {
+        OpenVinoStreamingBatchedClient cached = clients.get(servingName);
+        if (cached != null) {
+            return cached;
+        }
+        log.info("Registering OpenVINO client for serving name '{}' (batch={}, timeout={}ms)",
+                servingName, batchSize, timeoutMs);
+        OpenVinoStreamingBatchedClient created = OpenVinoStreamingBatchedClient.create(
+                stub, servingName, batchSize, timeoutMs);
+        OpenVinoStreamingBatchedClient existing = clients.putIfAbsent(servingName, created);
+        return existing != null ? existing : created;
     }
 }
