@@ -24,7 +24,7 @@ quarkusExtension {
 // Proto configuration - fetch KServe V2 Protocol from KServe repository
 pipestreamProtos {
     sourceMode = 'git'
-    generateMutiny = true
+    generateMutiny = false
 
     modules {
         register("kserve-v2") {
@@ -40,7 +40,6 @@ dependencies {
 
     implementation 'io.quarkus:quarkus-core'
     implementation 'io.quarkus:quarkus-arc'
-    implementation 'io.quarkus:quarkus-mutiny'
     implementation 'io.quarkus:quarkus-grpc'
     implementation 'io.quarkus:quarkus-rest-client'
     implementation 'io.quarkus:quarkus-rest-client-jackson'

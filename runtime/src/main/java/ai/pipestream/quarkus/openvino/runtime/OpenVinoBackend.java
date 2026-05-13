@@ -5,7 +5,6 @@ import inference.GRPCInferenceServiceGrpc;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
-import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -14,15 +13,13 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
- * OpenVINO Model Server backend. Implements the single
- * {@link EmbeddingBackend} SPI over a KServe v2 gRPC transport using the
- * Quarkus {@link GrpcClient} stack — Stork service discovery, TLS,
- * deadlines, and interceptors are all configurable via
- * {@code quarkus.grpc.clients.ovms.*} keys, not hand-rolled.
+ * OpenVINO Model Server backend. Implements the {@link EmbeddingBackend}
+ * SPI over a KServe v2 gRPC transport using the Quarkus {@link GrpcClient}
+ * stack — Stork service discovery, TLS, deadlines, and interceptors are
+ * all configurable via {@code quarkus.grpc.clients.ovms.*} keys, not
+ * hand-rolled.
  *
  * <pre>
  * quarkus.grpc.clients.ovms.host=localhost
@@ -35,15 +32,12 @@ import java.util.concurrent.Executors;
  * quarkus.stork.ovms.service-discovery.type=consul
  * </pre>
  *
- * <p><b>Concurrency model.</b> The {@link EmbeddingBackend} SPI still
- * returns {@link Uni} for now — the cross-repo flip to synchronous return
- * types is deferred. To stay off the event loop while keeping the SPI
- * shape, each Uni is created via {@code Uni.createFrom().item(supplier)}
- * and pinned to a per-bean virtual-thread executor with
- * {@code .runSubscriptionOn(...)}. The supplier itself is straight-line
- * blocking Java: blocking gRPC stub calls, {@code try/catch} on
- * {@link StatusRuntimeException}, plain {@code List<float[]>} returns
- * inside {@link OpenVinoStreamingBatchedClient}.
+ * <p><b>Concurrency model.</b> Plain blocking Java throughout — the SPI
+ * is synchronous, the gRPC stub is the blocking variant, the batched
+ * client uses virtual-thread-per-task for sub-batch fan-out. Callers
+ * (e.g. {@code EmbedderGrpcImpl}, {@code EmbedderPipelineService}) are
+ * expected to invoke from a {@code @RunOnVirtualThread} entry point so
+ * the carrier is parked on I/O rather than burning a platform thread.
  *
  * <p><b>Honest probe semantics.</b> {@link #supports(String)} treats only
  * "this specific model isn't served" signals (gRPC {@code NOT_FOUND} /
@@ -64,15 +58,6 @@ import java.util.concurrent.Executors;
 public class OpenVinoBackend implements EmbeddingBackend {
 
     private static final Logger log = LoggerFactory.getLogger(OpenVinoBackend.class);
-
-    /**
-     * Per-bean virtual-thread executor used to drive the SPI's blocking
-     * supplier off whatever thread the caller's reactive pipeline is on.
-     * Keeps the event loop unblocked even when the caller subscribes to
-     * the returned {@code Uni} from {@code @GrpcClient} or REST handlers
-     * that haven't been migrated to {@code @RunOnVirtualThread} yet.
-     */
-    private static final ExecutorService VT_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     @Inject
     @GrpcClient("ovms")
@@ -101,34 +86,30 @@ public class OpenVinoBackend implements EmbeddingBackend {
     }
 
     @Override
-    public Uni<Boolean> supports(String servingName) {
+    public boolean supports(String servingName) {
         if (servingName == null || servingName.isBlank()) {
-            return Uni.createFrom().item(Boolean.FALSE);
+            return false;
         }
-        return Uni.createFrom().item(() -> {
-            try {
-                clientFor(servingName);
-                return Boolean.TRUE;
-            } catch (StatusRuntimeException sre) {
-                Status.Code code = sre.getStatus().getCode();
-                if (code == Status.Code.NOT_FOUND || code == Status.Code.UNIMPLEMENTED) {
-                    log.info("OVMS does not serve '{}': {}", servingName, sre.getStatus());
-                    return Boolean.FALSE;
-                }
-                throw sre;
+        try {
+            clientFor(servingName);
+            return true;
+        } catch (StatusRuntimeException sre) {
+            Status.Code code = sre.getStatus().getCode();
+            if (code == Status.Code.NOT_FOUND || code == Status.Code.UNIMPLEMENTED) {
+                log.info("OVMS does not serve '{}': {}", servingName, sre.getStatus());
+                return false;
             }
-        }).runSubscriptionOn(VT_EXECUTOR);
+            throw sre;
+        }
     }
 
     @Override
-    public Uni<List<float[]>> embed(String servingName, List<String> texts) {
+    public List<float[]> embed(String servingName, List<String> texts) {
         if (texts == null || texts.isEmpty()) {
-            return Uni.createFrom().item(List.of());
+            return List.of();
         }
-        return Uni.createFrom().item(() -> {
-            OpenVinoStreamingBatchedClient client = clientFor(servingName);
-            return client.embed(texts);
-        }).runSubscriptionOn(VT_EXECUTOR);
+        OpenVinoStreamingBatchedClient client = clientFor(servingName);
+        return client.embed(texts);
     }
 
     private OpenVinoStreamingBatchedClient clientFor(String servingName) {
